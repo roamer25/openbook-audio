@@ -1,455 +1,91 @@
-
 import { PhononTTS } from 'phonon-tts';
-
-const $ = id => document.getElementById(id);
-const synth = window.speechSynthesis;
-
-let aiPlayer = null;
-let aiEngine = null;
-let aiVoiceCache = {};
-let aiBusy = false;
-let aiMode = false;
-
-let sections = [];
-let title = '';
-let sectionIndex = 0;
-let charIndex = 0;
-let playing = false;
-let paused = false;
-let token = 0;
-let voiceList = [];
-let utterance = null;
-let started = false;
-let watchdog = null;
-
-const status = text => {
-  $('status').textContent = text;
-};
-
-const normalize = text =>
-  text.replace(/\r/g, '')
-      .replace(/[ \t]+/g, ' ')
-      .replace(/\n{3,}/g, '\n\n')
-      .trim();
-
-function setBook(name, parts) {
-  stop();
-  title = name;
-  sections = parts.filter(part => part.text.trim());
-  sectionIndex = 0;
-  charIndex = 0;
-
-  $('filename').textContent = name;
-  $('bookTitle').textContent = name;
-  $('chapters').replaceChildren();
-
-  sections.forEach((part, index) => {
-    $('chapters').add(
-      new Option(`${index + 1}. ${part.title}`, String(index))
-    );
-  });
-
-  display();
-  status(`Ready: ${sections.length} section(s).`);
+const $=id=>document.getElementById(id),synth=window.speechSynthesis;let aiPlayer=null,aiEngine=null,aiVoiceCache={},aiBusy=false,aiMode=false;let sections=[],title='',sectionIndex=0,charIndex=0,playing=false,paused=false,token=0,voiceList=[],utterance=null,started=false,watchdog=null;const status=t=>$('status').textContent=t;const normalize=t=>t.replace(/\r/g,'').replace(/[ \t]+/g,' ').replace(/\n{3,}/g,'\n\n').trim();function setBook(name,parts){stop();title=name;sections=parts.filter(x=>x.text.trim());sectionIndex=0;charIndex=0;$('filename').textContent=name;$('bookTitle').textContent=name;$('chapters').replaceChildren();sections.forEach((p,i)=>{let o=new Option(`${i+1}. ${p.title}`,String(i));$('chapters').add(o)});display();status(`Ready: ${sections.length} section(s).`)}function display(){let p=sections[sectionIndex];$('reader').textContent=p?p.text:'Your book’s text will appear here.';$('chapters').value=String(sectionIndex);progress()}function progress(){let p=sections[sectionIndex];$('seek').value=p?Math.round((charIndex/p.text.length)*100):0;$('progress').textContent=p?`Section ${sectionIndex+1}/${sections.length} · ${Math.min(charIndex,p.text.length).toLocaleString()}/${p.text.length.toLocaleString()} characters`:'No book loaded'}function stop(){if(aiPlayer){aiPlayer.pause();aiPlayer.removeAttribute('src');aiPlayer.load()}aiBusy=false;token++;playing=false;paused=false;started=false;clearTimeout(watchdog);utterance=null;synth?.cancel();$('play').textContent='▶'}function chooseChunk(t,start){let end=Math.min(start+220,t.length);if(end<t.length){let cut=Math.max(t.lastIndexOf('. ',end),t.lastIndexOf('? ',end),t.lastIndexOf('! ',end),t.lastIndexOf(' ',end));if(cut>start+70)end=cut+1}return t.slice(start,end)}function speak(){if(aiMode){speakAI();return}
+if(!playing)return;if(!synth&&!aiMode)return;
+const mine=token;
+if(sectionIndex>=sections.length){stop();status('Finished the book.');return}
+const text=sections[sectionIndex].text;
+if(charIndex>=text.length){sectionIndex++;charIndex=0;display();speak();return}
+const chunk=chooseChunk(text,charIndex);
+if(!chunk){charIndex=text.length;speak();return}
+const start=charIndex;
+const u=new SpeechSynthesisUtterance(chunk);
+utterance=u;started=false;
+const selected=voiceList.find(v=>v.voiceURI===$('voices').value);
+// Safari may reject a stale voice object; the system default is the safe fallback.
+if(selected)u.voice=selected;
+u.lang=selected?.lang||'en-US';
+u.rate=Number($('speed').value);
+u.onstart=()=>{if(mine!==token)return;started=true;clearTimeout(watchdog);status('Narrating…')};
+u.onboundary=e=>{if(mine!==token||!playing)return;if(typeof e.charIndex==='number'){charIndex=start+Math.min(e.charIndex,chunk.length);progress()}};
+u.onend=()=>{if(mine!==token||!playing)return;clearTimeout(watchdog);charIndex=start+chunk.length;progress();setTimeout(()=>{if(mine===token&&playing)speak()},80)};
+u.onerror=e=>{if(mine!==token)return;clearTimeout(watchdog);if(e.error==='interrupted'||e.error==='canceled'){if(playing){playing=false;paused=false;$('play').textContent='▶';status('Narration interrupted. Tap Play to try again.')}return}playing=false;paused=false;status('Speech error: '+(e.error||'unknown')+'. Try another voice.');$('play').textContent='▶'};
+try{synth.speak(u)}catch(err){playing=false;$('play').textContent='▶';status('Could not start speech: '+err.message);return}
+status('Starting narration…');progress();
+watchdog=setTimeout(()=>{if(mine===token&&playing&&!started){status('Speech did not start. Try the Default voice, then tap Play again.');playing=false;paused=false;$('play').textContent='▶';synth.cancel()}},4500);
 }
-
-function display() {
-  const part = sections[sectionIndex];
-
-  $('reader').textContent = part
-    ? part.text
-    : 'Your book’s text will appear here.';
-
-  $('chapters').value = String(sectionIndex);
-  progress();
+function play(){
+if(!sections.length){status('Open a book or paste text first.');return}
+if(!synth&&!aiMode){status('Speech is not supported by this browser.');return}
+if(paused){paused=false;playing=true;if(aiMode){aiPlayer?.play().catch(e=>status('Tap Play again: '+e.message))}else synth.resume();$('play').textContent='❚❚';status('Resuming…');return}
+if(playing){if(aiMode)aiPlayer?.pause();else synth.pause();paused=true;playing=false;$('play').textContent='▶';status('Paused.');return}
+// Important for iOS Safari: do not cancel and immediately speak in the same tap.
+// Previous cancellation happens only when stopping/seeking/changing books.
+token++;playing=true;paused=false;$('play').textContent='❚❚';
+if(!aiMode&&synth?.paused)synth.resume();
+speak();
 }
-
-function progress() {
-  const part = sections[sectionIndex];
-
-  $('seek').value = part
-    ? Math.round((charIndex / part.text.length) * 100)
-    : 0;
-
-  $('progress').textContent = part
-    ? `Section ${sectionIndex + 1}/${sections.length} · ${Math.min(charIndex, part.text.length).toLocaleString()}/${part.text.length.toLocaleString()} characters`
-    : 'No book loaded';
+$('play').onclick=play;$('pause').onclick=()=>{if(playing&&!paused){paused=true;playing=false;if(aiMode)aiPlayer?.pause();else synth.pause();$('play').textContent='▶';status('Paused.')}};$('stop').onclick=()=>{stop();status('Stopped.')};$('back').onclick=()=>{if(!sections.length)return;let active=playing;stop();charIndex=Math.max(0,charIndex-250);progress();if(active)play()};$('next').onclick=()=>{if(!sections.length)return;let active=playing;stop();sectionIndex=(sectionIndex+1)%sections.length;charIndex=0;display();if(active)play()};$('chapters').onchange=()=>{stop();sectionIndex=Number($('chapters').value);charIndex=0;display()};$('speed').oninput=()=>$('speedLabel').textContent=Number($('speed').value).toFixed(1)+'×';$('usePaste').onclick=()=>{let t=normalize($('paste').value);if(!t){status('Paste some text first.');return}setBook('Pasted text',[{title:'Pasted text',text:t}])};$('clear').onclick=()=>{stop();sections=[];title='';sectionIndex=0;charIndex=0;$('paste').value='';$('filename').textContent='No file selected';$('bookTitle').textContent='Open a book to begin.';$('chapters').replaceChildren();display();status('Cleared.')};$('seek').onchange=()=>{if(!sections.length)return;let active=playing;stop();charIndex=Math.floor(sections[sectionIndex].text.length*Number($('seek').value)/100);progress();if(active)play()};$('demo').onclick=()=>setBook('Sample reading',[{title:'Welcome',text:'Welcome to OpenBook Audio. You can import an EPUB book, a text-based PDF, a plain text file, or paste any text. Choose a voice and press play. There are no accounts, subscriptions, or listening limits.'}]);function voices(){voiceList=synth?.getVoices()||[];let prev=$('voices').value;$('voices').replaceChildren();$('voices').add(new Option('★ Easton — AI narrator (US)','ai:easton'));$('voices').add(new Option('★ Edwin — AI narrator (UK)','ai:edwin'));$('voices').add(new Option('Default iPhone voice (recommended)','')); voiceList.forEach(v=>$('voices').add(new Option(`${v.name} (${v.lang})${v.localService?' · device':''}`,v.voiceURI)));if(prev==='ai:easton'||prev==='ai:edwin'||voiceList.some(v=>v.voiceURI===prev))$('voices').value=prev;else $('voices').value='ai:easton';aiMode=$('voices').value.startsWith('ai:')}voices();if(synth)synth.onvoiceschanged=voices;$('voices').addEventListener('change',()=>{stop();aiMode=$('voices').value.startsWith('ai:');status(aiMode?'AI narrator selected. Tap Play to load.':'iPhone voice selected.')});
+// Official Phonon WebAssembly browser engine, bundled with Vite.
+let aiLoadPromise=null, currentAudioURL=null;
+const voiceFiles={easton:'LMDIYE0Oa377Qh6Z',edwin:'zUCxzrOrugTSis03'};
+async function loadAI(){
+ if(aiEngine)return aiEngine;
+ if(!aiLoadPromise){
+  aiLoadPromise=(async()=>{
+   status('Downloading Phonon speech engine and model (first use may take minutes)…');
+   const engine=await PhononTTS.load({lang:'en',quant:'q8',threads:1,device:'cpu',onProgress:({file,loaded,total,cached})=>{
+    if(cached)return;
+    if(total)status('Downloading '+String(file).split('/').pop()+': '+Math.round(loaded/total*100)+'%');
+   }});
+   aiEngine=engine;
+   return engine;
+  })().catch(e=>{aiLoadPromise=null;throw e});
+ }
+ return aiLoadPromise;
 }
-
-function stop() {
-  if (aiPlayer) {
-    aiPlayer.pause();
-    aiPlayer.removeAttribute('src');
-    aiPlayer.load();
-  }
-
-  aiBusy = false;
-  token++;
-  playing = false;
-  paused = false;
-  started = false;
-
-  clearTimeout(watchdog);
-  utterance = null;
-  synth?.cancel();
-
-  $('play').textContent = '▶';
+async function ensureVoice(engine,name){
+ if(aiVoiceCache[name])return;
+ status('Loading '+name+' voice…');
+ await engine.addVoice(name,'https://huggingface.co/gradium/phonon-voices/resolve/main/voices/'+voiceFiles[name]+'.safetensors');
+ aiVoiceCache[name]=true;
 }
-
-
-async function loadAI() {
-  if (aiEngine) return aiEngine;
-
-  status('Loading AI narration engine…');
-
-  aiEngine = await PhononTTS.load({
-    lang: 'en'
-  });
-
-  status('AI narration engine ready.');
-  return aiEngine;
+async function speakAI(){
+ if(!playing||aiBusy)return;
+ const mine=token;
+ if(sectionIndex>=sections.length){stop();status('Finished the book.');return}
+ const text=sections[sectionIndex].text;
+ if(charIndex>=text.length){sectionIndex++;charIndex=0;display();speakAI();return}
+ const chunk=chooseChunk(text,charIndex).slice(0,155);
+ if(!chunk){charIndex=text.length;speakAI();return}
+ const start=charIndex;aiBusy=true;
+ try{
+  const engine=await loadAI();if(mine!==token||!playing)return;
+  const name=$('voices').value.split(':')[1];
+  await ensureVoice(engine,name);if(mine!==token||!playing)return;
+  status('Generating '+name+' narration…');
+  const wav=await engine.synthWav(chunk,{voice:name});
+  if(mine!==token||!playing)return;
+  if(!wav.size)throw Error('Model returned empty audio');
+  if(currentAudioURL)URL.revokeObjectURL(currentAudioURL);
+  currentAudioURL=URL.createObjectURL(wav);
+  if(!aiPlayer){aiPlayer=new Audio();aiPlayer.playsInline=true}
+  aiPlayer.onended=()=>{if(mine!==token||!playing)return;charIndex=start+chunk.length;progress();speakAI()};
+  aiPlayer.onerror=()=>{if(mine===token){playing=false;$('play').textContent='▶';status('AI audio playback failed.')}};
+  aiPlayer.src=currentAudioURL;
+  aiPlayer.playbackRate=Number($('speed').value);
+  status('Narrating with '+name+'…');await aiPlayer.play();
+ }catch(err){if(mine===token){playing=false;$('play').textContent='▶';status('AI voice failed: '+(err.message||err))}}
+ finally{aiBusy=false}
 }
-
-async function speakAI(text) {
-  const currentToken = token;
-  let url = null;
-
-  try {
-    aiBusy = true;
-    status('Generating natural narration…');
-
-    const engine = await loadAI();
-    if (currentToken !== token) {
-      aiBusy = false;
-      return;
-    }
-
-    const voice = $('voice').value || 'default';
-
-    const wav = await engine.synthWav(text, {
-      voice
-    });
-
-    if (currentToken !== token) {
-      aiBusy = false;
-      return;
-    }
-
-    if (!aiPlayer) {
-      aiPlayer = new Audio();
-    }
-
-    url = URL.createObjectURL(wav);
-    aiPlayer.src = url;
-    aiPlayer.playbackRate = Number($('speed').value) || 1;
-
-    aiPlayer.onended = () => {
-      URL.revokeObjectURL(url);
-      aiBusy = false;
-
-      if (playing && currentToken === token) {
-        nextChunk();
-      }
-    };
-
-    await aiPlayer.play();
-    status('Playing AI narration.');
-  } catch (error) {
-    if (url) URL.revokeObjectURL(url);
-    aiBusy = false;
-    playing = false;
-    status(`AI error: ${error.message}`);
-    console.error(error);
-  }
-}
-
-function nextChunk() {
-  if (!playing || !sections.length) return;
-
-  const part = sections[sectionIndex];
-  if (!part) return;
-
-  if (charIndex >= part.text.length) {
-    if (sectionIndex + 1 >= sections.length) {
-      stop();
-      status('Finished reading.');
-      return;
-    }
-
-    sectionIndex++;
-    charIndex = 0;
-    display();
-  }
-
-  const text = sections[sectionIndex].text;
-  const remaining = text.slice(charIndex);
-
-  const match = remaining.slice(0, 400)
-    .match(/^.{80,350}?[.!?](?:\s|$)/s);
-
-  const chunk = match
-    ? match[0]
-    : remaining.slice(0, 300);
-
-  charIndex += chunk.length;
-  progress();
-
-  if (aiMode) {
-    speakAI(chunk);
-  } else {
-    speakBrowser(chunk);
-  }
-}
-
-function speakBrowser(text) {
-  const currentToken = token;
-  const speech = new SpeechSynthesisUtterance(text);
-
-  utterance = speech;
-  speech.rate = Number($('speed').value) || 1;
-
-  const selected = voiceList.find(
-    voice => voice.name === $('voice').value
-  );
-
-  if (selected) speech.voice = selected;
-
-  speech.onend = () => {
-    if (playing && currentToken === token) {
-      nextChunk();
-    }
-  };
-
-  speech.onerror = event => {
-    if (event.error !== 'canceled') {
-      status(`Speech error: ${event.error}`);
-    }
-  };
-
-  synth.speak(speech);
-}
-
-function play() {
-  if (!sections.length) {
-    status('Import a book first.');
-    return;
-  }
-
-  if (paused) {
-    paused = false;
-    playing = true;
-
-    if (aiMode) {
-      aiPlayer?.play();
-    } else {
-      synth.resume();
-    }
-
-    $('play').textContent = 'Ⅱ';
-    return;
-  }
-
-  if (playing) {
-    paused = true;
-    playing = false;
-
-    if (aiMode) {
-      aiPlayer?.pause();
-    } else {
-      synth.pause();
-    }
-
-    $('play').textContent = '▶';
-    return;
-  }
-
-  playing = true;
-  paused = false;
-  $('play').textContent = 'Ⅱ';
-  nextChunk();
-}
-
-function skip(direction) {
-  if (!sections.length) return;
-
-  stop();
-
-  sectionIndex = Math.max(
-    0,
-    Math.min(sections.length - 1, sectionIndex + direction)
-  );
-
-  charIndex = 0;
-  display();
-  play();
-}
-
-function extractHTML(html) {
-  const doc = new DOMParser().parseFromString(html, 'text/html');
-  doc.querySelectorAll('script,style,nav,svg').forEach(el => el.remove());
-  return normalize(doc.body.textContent || '');
-}
-
-async function importEPUB(file) {
-  if (!window.JSZip) {
-    throw new Error('EPUB library unavailable.');
-  }
-
-  const zip = await JSZip.loadAsync(file);
-  const container = zip.file('META-INF/container.xml');
-  if (!container) throw new Error('Invalid EPUB file.');
-
-  const xml = new DOMParser().parseFromString(
-    await container.async('text'), 'application/xml'
-  );
-
-  const root = xml.getElementsByTagName('rootfile')[0];
-  const opfPath = root?.getAttribute('full-path');
-  if (!opfPath) throw new Error('EPUB contents missing.');
-
-  const opf = new DOMParser().parseFromString(
-    await zip.file(opfPath).async('text'), 'application/xml'
-  );
-
-  const manifest = new Map(
-    Array.from(opf.getElementsByTagName('item')).map(item => [
-      item.getAttribute('id'),
-      item.getAttribute('href')
-    ])
-  );
-
-  const folder = opfPath.split('/').slice(0, -1).join('/');
-  const parts = [];
-
-  for (const item of opf.getElementsByTagName('itemref')) {
-    const href = manifest.get(item.getAttribute('idref'));
-    if (!href) continue;
-
-    const path = [folder, href.split('#')[0]]
-      .filter(Boolean).join('/');
-
-    const entry = zip.file(path);
-    if (!entry) continue;
-
-    const text = extractHTML(await entry.async('text'));
-    if (text) {
-      parts.push({
-        title: `Chapter ${parts.length + 1}`,
-        text
-      });
-    }
-  }
-
-  if (!parts.length) throw new Error('No readable chapters found.');
-  return parts;
-}
-
-async function importPDF(file) {
-  if (!window.pdfjsLib) {
-    throw new Error('PDF library unavailable.');
-  }
-
-  pdfjsLib.GlobalWorkerOptions.workerSrc =
-    'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-
-  const pdf = await pdfjsLib.getDocument({
-    data: new Uint8Array(await file.arrayBuffer())
-  }).promise;
-
-  const parts = [];
-
-  for (let i = 1; i <= pdf.numPages; i++) {
-    const page = await pdf.getPage(i);
-    const content = await page.getTextContent();
-    const text = normalize(
-      content.items.map(item => item.str || '').join(' ')
-    );
-
-    if (text) parts.push({ title: `Page ${i}`, text });
-  }
-
-  if (!parts.length) {
-    throw new Error('PDF contains no selectable text.');
-  }
-
-  return parts;
-}
-
-$('upload').addEventListener('change', async event => {
-  const file = event.target.files?.[0];
-  if (!file) return;
-
-  try {
-    status(`Opening ${file.name}…`);
-    const ext = file.name.split('.').pop().toLowerCase();
-    let parts;
-
-    if (ext === 'epub') {
-      parts = await importEPUB(file);
-    } else if (ext === 'pdf') {
-      parts = await importPDF(file);
-    } else if (ext === 'txt' || ext === 'md') {
-      parts = [{
-        title: 'Document',
-        text: normalize(await file.text())
-      }];
-    } else {
-      throw new Error('Choose an EPUB, PDF, TXT, or MD file.');
-    }
-
-    setBook(file.name, parts);
-  } catch (error) {
-    status(`Import error: ${error.message}`);
-  }
-
-  event.target.value = '';
-});
-
-$('play').addEventListener('click', play);
-
-$('stop').addEventListener('click', () => {
-  stop();
-  status('Stopped.');
-});
-
-$('back').addEventListener('click', () => skip(-1));
-$('next').addEventListener('click', () => skip(1));
-
-$('chapters').addEventListener('change', event => {
-  stop();
-  sectionIndex = Number(event.target.value);
-  charIndex = 0;
-  display();
-});
-
-$('speed').addEventListener('input', event => {
-  if (aiPlayer) {
-    aiPlayer.playbackRate = Number(event.target.value);
-  }
-});
-
-$('seek').addEventListener('change', event => {
-  if (!sections.length) return;
-
-  stop();
-  charIndex = Math.floor(
-    sections[sectionIndex].text.length *
-    Number(event.target.value) / 100
-  );
-  progress();
-});
-
-$('voice').addEventListener('change', event => {
-  stop();
-  aiMode = ['easton', 'edwin'].includes(event.target.value);
-  status(aiMode ? 'AI narrator selected.' : 'iPhone narrator selected.');
-});
-
-function refreshVoices() {
-  voiceList = synth?.getVoices() || [];
-}
-
-refreshVoices();
-if (synth) synth.onvoiceschanged = refreshVoices;
-
-status('Open a book to begin.');
+function parseXML(t){return new DOMParser().parseFromString(t,'application/xml')}function local(node,name){return Array.from(node.getElementsByTagName('*')).filter(x=>x.localName===name)}function decodeHTML(html){let doc=new DOMParser().parseFromString(html,'text/html');doc.querySelectorAll('script,style,nav,svg').forEach(e=>e.remove());let blocks=doc.body.querySelectorAll('h1,h2,h3,h4,p,li,blockquote');let out=Array.from(blocks).map(e=>normalize(e.textContent)).filter(Boolean).join('\n\n');return normalize(out||doc.body.textContent||'')}function resolvePath(base,relative){let seg=base.split('/');seg.pop();for(let part of relative.split('/')){if(part==='..')seg.pop();else if(part!=='.'&&part)seg.push(part)}return seg.join('/')}async function epub(file){if(!window.JSZip)throw Error('EPUB parser unavailable. Connect to the internet and reload.');let zip=await JSZip.loadAsync(file);let container=zip.file('META-INF/container.xml');if(!container)throw Error('Not a valid EPUB.');let cx=parseXML(await container.async('text'));let root=local(cx,'rootfile')[0];if(!root)throw Error('EPUB package file missing.');let opfPath=root.getAttribute('full-path');let opf=zip.file(opfPath);if(!opf)throw Error('EPUB contents missing.');let doc=parseXML(await opf.async('text'));let manifest=new Map(local(doc,'item').map(x=>[x.getAttribute('id'),x]));let order=local(doc,'itemref').map(x=>x.getAttribute('idref'));let parts=[];for(let id of order){let item=manifest.get(id);if(!item)continue;let type=item.getAttribute('media-type')||'';if(!/html|xml/.test(type))continue;let path=resolvePath(opfPath,item.getAttribute('href').split('#')[0]);let f=zip.file(path);if(!f)continue;let raw=await f.async('text');let txt=decodeHTML(raw);if(txt)parts.push({title:`Chapter ${parts.length+1}`,text:txt})}if(!parts.length)throw Error('No readable chapters found.');let name=local(doc,'title')[0]?.textContent?.trim()||file.name;return{name,parts}}async function pdf(file){if(!window.pdfjsLib)throw Error('PDF parser unavailable. Connect to the internet and reload.');pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';let bytes=new Uint8Array(await file.arrayBuffer());let doc=await pdfjsLib.getDocument({data:bytes}).promise;let parts=[];for(let i=1;i<=doc.numPages;i++){let page=await doc.getPage(i);let content=await page.getTextContent();let lines=[],line='',lastY=null;for(let it of content.items){if(typeof it.str!=='string')continue;let y=it.transform?.[5];if(lastY!==null&&y!==undefined&&Math.abs(y-lastY)>3){if(line.trim())lines.push(line.trim());line=''}line+=(line?' ':'')+it.str;if(y!==undefined)lastY=y;if(it.hasEOL){if(line.trim())lines.push(line.trim());line='';lastY=null}}if(line.trim())lines.push(line.trim());let t=normalize(lines.join('\n'));if(t)parts.push({title:`Page ${i}`,text:t});if(i%20===0)status(`Extracting PDF: ${i}/${doc.numPages} pages…`)}if(!parts.length)throw Error('No selectable text found. This PDF may be scanned images.');return{name:file.name,parts}}$('upload').onchange=async e=>{let file=e.target.files?.[0];if(!file)return;status('Opening '+file.name+'…');try{let ext=file.name.split('.').pop().toLowerCase();let book;if(ext==='epub')book=await epub(file);else if(ext==='pdf')book=await pdf(file);else if(ext==='txt'||ext==='md')book={name:file.name,parts:[{title:'Document',text:normalize(await file.text())}]};else throw Error('Unsupported file format.');setBook(book.name,book.parts)}catch(err){status('Could not open file: '+err.message)}e.target.value=''};
+const cover=document.getElementById('coverTitle');new MutationObserver(()=>{cover.textContent=document.getElementById('bookTitle').textContent.slice(0,70)}).observe(document.getElementById('bookTitle'),{childList:true});
