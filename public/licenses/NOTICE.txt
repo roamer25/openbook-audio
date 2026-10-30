@@ -1,4 +1,0 @@
-OpenBook Audio uses SoundTouchJS 2.1.1 packages for pitch-preserving playback.
-Copyright SoundTouchJS contributors. Licensed under Mozilla Public License 2.0.
-Unmodified upstream source: https://github.com/cutterbl/SoundTouchJS
-License: ./SoundTouchJS-MPL-2.0.txt

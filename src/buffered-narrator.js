@@ -1,3 +1,4 @@
+import { encodeWav } from 'phonon-tts';
 // Preserve every character and never split a word, including unusually long words.
 export function narrationChunk(text, start, limit = 600) {
   if (start >= text.length) return '';
@@ -13,128 +14,86 @@ export function narrationChunk(text, start, limit = 600) {
   return text.slice(start, end);
 }
 
+// Use the browser's native, pitch-preserving media path. The generated PCM is
+// encoded unchanged; no third-party pitch processor touches the narrator's voice.
 export class BufferedNarrator {
-  constructor({ contextFactory, outputFactory, onPosition, onStatus, onEnded, onError, onPassage, prebuffer = 6, maxAhead = 30 } = {}) {
-    Object.assign(this, { contextFactory: contextFactory || (() => new (window.AudioContext || window.webkitAudioContext)()), outputFactory:outputFactory|| (async context=>({input:context.destination,setRateAtTime(){},dispose(){},drainSeconds:0})), onPosition, onStatus, onEnded, onError, onPassage, prebuffer, maxAhead });
-    this.epoch = 0; this.active = false; this.context = null;
+  constructor({audioFactory,preloaderFactory,urls,onPosition,onStatus,onEnded,onError,onBlocked,onPassage,maxAhead=90,prime=true}={}) {
+    Object.assign(this,{audioFactory:audioFactory||(()=>new Audio()),preloaderFactory:preloaderFactory||(()=>new Audio()),urls:urls||URL,onPosition,onStatus,onEnded,onError,onBlocked,onPassage,maxAhead,prime});
+    this.active=false;this.epoch=0;this.ownedUrls=new Set();
   }
-  start({ getEngine, parts, sectionIndex, charIndex, voice, rate = 1 }) {
-    this.stop();
-    const epoch = this.epoch;
-    this.active = true; this.paused = false; this.queue = []; this.sources = new Set(); this.timeline = [];
-    this.pendingSeconds = 0; this.started = false; this.inputDone = false; this.rate = rate; this.lastPosition = ''; this.lastPositionUpdate = -Infinity; this.lastSection = -1;
-    this.controller = new AbortController();
-    // Resume inside the Play tap, before waiting for a model or voice download (iOS).
+  start({getEngine,parts,sectionIndex,charIndex,voice,rate=1}) {
+    this.stop();const epoch=this.epoch;this.active=true;this.paused=false;this.rate=rate;this.queue=[];this.current=null;this.inputDone=false;this.controller=new AbortController();
     try {
-      this.context ||= this.contextFactory();
-      this.tail = this.context.currentTime;
-      this.contextReady = Promise.resolve(this.context.resume());
-    } catch (error) { this.fail(error, epoch); return; }
-    this.timer = setInterval(() => this.tick(epoch), 50);
-    this.task = this.produce({ getEngine, parts, sectionIndex, charIndex, voice, epoch }).catch(error => this.fail(error, epoch));
+      this.audio ||= this.audioFactory();this.preloader ||= this.preloaderFactory();
+      this.audio.preload='auto';this.preloader.preload='auto';this.audio.playsInline=true;this.applyRate();
+      // Prime this same element in the Play gesture so Safari can keep using it
+      // when asynchronously generated audio becomes available.
+      if(this.prime)this.unlock(epoch);
+      this.onStatus?.('Preparing narration…');
+      this.task=this.produce({getEngine,parts,sectionIndex,charIndex,voice,epoch}).catch(error=>this.fail(error,epoch));
+    } catch(error){this.fail(error,epoch)}
   }
-  async produce({ getEngine, parts, sectionIndex, charIndex, voice, epoch }) {
-    await this.contextReady;
-    const outputReady=this.outputFactory(this.context).then(output=>{if(this.isCurrent(epoch))this.output=output;else output.dispose();return output});
-    const [engine,output] = await Promise.all([getEngine(),outputReady]);
-    if (!this.isCurrent(epoch)) {output.dispose();return;}
-    this.output=output;output.onFailure?.(error=>this.fail(error,epoch));
-    this.sampleRate = engine.sampleRate;
-    this.onStatus?.('Buffering narration…');
-    for (let section = sectionIndex; section < parts.length; section++) {
-      const text = parts[section].text;
-      for (let start = section === sectionIndex ? charIndex : 0; start < text.length;) {
-        if (!this.isCurrent(epoch)) return;
-        // Bound each model request and keep synthesizing ahead of what is audible.
-        const passage = narrationChunk(text, start);
-        const record = { section, start, end: start + passage.length, totalSamples: 0, complete: false };
-        const stream = engine.stream(passage, { voice, signal: this.controller.signal });
-        this.stream = stream;
-        for await (const pcm of stream) {
-          while (this.isCurrent(epoch) && this.pendingSeconds >= this.maxAhead)
-            await new Promise(resolve => setTimeout(resolve, 40));
-          if (!this.isCurrent(epoch)) return;
-          if (!pcm.length) continue;
-          this.queue.push({ pcm, record, sampleOffset: record.totalSamples });
-          record.totalSamples += pcm.length;
-          this.pendingSeconds += pcm.length / this.sampleRate;
-          this.pump();
-        }
-        if (!this.isCurrent(epoch)) return;
-        record.complete = true;
-        this.onPassage?.({section,start:record.start,end:record.end,seconds:record.totalSamples/this.sampleRate});
-        if (!record.totalSamples) throw Error('The narrator returned no audio.');
-        start = record.end;
+  isCurrent(epoch){return this.active&&this.epoch===epoch}
+  own(blob){const url=this.urls.createObjectURL(blob);this.ownedUrls.add(url);return url}
+  release(url){if(this.ownedUrls.delete(url))this.urls.revokeObjectURL(url)}
+  unlock(epoch){
+    const url=this.own(encodeWav(new Float32Array(2400),24000));this.audio.muted=true;this.audio.src=url;
+    Promise.resolve(this.audio.play()).catch(()=>{}).finally(()=>{
+      if(this.isCurrent(epoch)&&this.audio.src===url){this.audio.pause();this.audio.muted=false;this.audio.removeAttribute('src');this.audio.load()}
+      this.release(url);
+    });
+  }
+  async produce({getEngine,parts,sectionIndex,charIndex,voice,epoch}){
+    const engine=await getEngine();if(!this.isCurrent(epoch))return;
+    for(let section=sectionIndex;section<parts.length;section++){
+      const text=parts[section].text;
+      let first=section===sectionIndex?charIndex:0;while(first>0&&/\S/.test(text[first]||'')&&/\S/.test(text[first-1]))first--;
+      for(let start=first;start<text.length;){
+        while(this.isCurrent(epoch)&&this.aheadSeconds()>=this.maxAhead)await new Promise(resolve=>setTimeout(resolve,40));
+        if(!this.isCurrent(epoch))return;
+        const passage=narrationChunk(text,start);const frames=[];let sampleCount=0;
+        const stream=engine.stream(passage,{voice,signal:this.controller.signal});this.stream=stream;
+        for await(const pcm of stream){if(!this.isCurrent(epoch))return;if(pcm.length){frames.push(pcm);sampleCount+=pcm.length}}
+        if(!this.isCurrent(epoch))return;if(!sampleCount)throw Error('The narrator returned no audio.');
+        const samples=new Float32Array(sampleCount);let offset=0;for(const pcm of frames){samples.set(pcm,offset);offset+=pcm.length}
+        const seconds=sampleCount/engine.sampleRate;
+        const item={section,start,end:start+passage.length,seconds,url:this.own(encodeWav(samples,engine.sampleRate))};
+        this.onPassage?.({section,start,end:item.end,seconds});this.queue.push(item);start=item.end;this.pump(epoch);
       }
     }
-    if (!this.isCurrent(epoch)) return;
-    this.inputDone = true;
-    this.pump(); this.tick(epoch);
+    if(!this.isCurrent(epoch))return;this.inputDone=true;this.pump(epoch);
   }
-  isCurrent(epoch) { return this.active && this.epoch === epoch; }
-  pump() {
-    if (!this.active || this.paused) return;
-    const now = this.context.currentTime;
-    if (this.started && this.tail < now) { this.started = false; this.onStatus?.('Buffering narration…'); }
-    if (!this.started) {
-      if (!this.queue.length || (!this.inputDone && this.pendingSeconds < this.prebuffer)) return;
-      this.started = true; this.tail = now + 0.05;
-      this.onStatus?.('Narrating…');
-    }
-    // Schedule on the audio clock. A new sentence never waits for an HTML audio
-    // ended event or for another WAV to be generated and loaded.
-    while (this.queue.length && this.tail < now + 1) {
-      const item = this.queue.shift();
-      this.pendingSeconds -= item.pcm.length / this.sampleRate;
-      const buffer = this.context.createBuffer(1, item.pcm.length, this.sampleRate);
-      buffer.copyToChannel(item.pcm, 0);
-      const source = this.context.createBufferSource();
-      source.buffer = buffer; source.playbackRate.value = this.rate; source.connect(this.output.input);
-      const time = Math.max(this.tail, now + 0.01);
-      this.output.setRateAtTime(this.rate,time);
-      const duration = buffer.duration / this.rate;
-      this.timeline.push({ time, end: time + duration, ...item });
-      this.tail = time + duration;
-      this.sources.add(source);
-      source.onended = () => { this.sources.delete(source); source.disconnect(); };
-      source.start(time);
-    }
+  aheadSeconds(){return this.queue.reduce((sum,item)=>sum+item.seconds,0)+(this.current?Math.max(0,this.current.seconds-(this.audio.currentTime||0)):0)}
+  applyRate(){if(!this.audio)return;this.audio.preservesPitch=true;if('webkitPreservesPitch' in this.audio)this.audio.webkitPreservesPitch=true;this.audio.defaultPlaybackRate=this.rate||1;this.audio.playbackRate=this.rate||1}
+  pump(epoch){
+    if(!this.isCurrent(epoch)||this.paused)return;
+    if(this.current){this.preloadNext();return}
+    const item=this.queue.shift();
+    if(!item){if(this.inputDone){this.stop();this.onEnded?.()}else this.onStatus?.('Buffering narration…');return}
+    this.current=item;this.audio.muted=false;this.audio.src=item.url;this.applyRate();
+    this.audio.onloadedmetadata=()=>{if(this.isCurrent(epoch)&&this.current===item)this.applyRate()};
+    this.audio.ontimeupdate=()=>{if(!this.isCurrent(epoch)||this.paused||this.current!==item)return;const fraction=Math.max(0,Math.min(1,(this.audio.currentTime||0)/item.seconds));this.onPosition?.(item.section,item.start+Math.floor((item.end-item.start)*fraction))};
+    this.audio.onended=()=>{if(!this.isCurrent(epoch)||this.current!==item)return;this.onPosition?.(item.section,item.end);this.current=null;this.release(item.url);this.pump(epoch)};
+    this.audio.onerror=()=>this.fail(Error('Audio could not play. Tap Play to try again.'),epoch);
+    this.audio.onplaying=()=>{if(this.isCurrent(epoch)&&!this.paused)this.onStatus?.('Narrating…')};
+    this.onPosition?.(item.section,item.start);this.preloadNext();this.playMedia(epoch);
   }
-  tick(epoch) {
-    if (!this.isCurrent(epoch) || this.paused) return;
-    const now = this.context.currentTime;
-    const current = this.timeline.find(item => now >= item.time && now < item.end);
-    if (current) {
-      const { record } = current;
-      const fraction = Math.min(1, Math.max(0, (now - current.time) / (current.end - current.time)));
-      const samples = current.sampleOffset + fraction * current.pcm.length;
-      // Text progress is estimated from audio duration; the engine supplies no word timestamps.
-      const offset = record.complete ? record.start + Math.floor((record.end - record.start) * samples / record.totalSamples) : record.start;
-      const position = `${record.section}:${offset}`;
-      if (position !== this.lastPosition && (now-this.lastPositionUpdate>=0.25||record.section!==this.lastSection)) { this.lastPosition = position; this.lastPositionUpdate=now; this.lastSection=record.section; this.onPosition?.(record.section, offset); }
-    }
-    this.timeline = this.timeline.filter(item => item.end > now);
-    if (this.started && now >= this.tail && !this.queue.length && !this.inputDone) {
-      this.started = false; this.onStatus?.('Buffering narration…');
-    }
-    this.pump();
-    if (this.inputDone && !this.queue.length && !this.sources.size && now >= this.tail+(this.output?.drainSeconds||0)) {
-      this.stop(); this.onEnded?.();
-    }
+  preloadNext(){const next=this.queue[0];if(next&&this.preloader.src!==next.url){this.preloader.src=next.url;this.preloader.load()}}
+  playMedia(epoch){
+    return Promise.resolve(this.audio.play()).catch(error=>{
+      if(!this.isCurrent(epoch))return;
+      if(error.name==='NotAllowedError'){this.paused=true;this.onBlocked?.();this.onStatus?.('Audio is ready. Tap Play to start.');return}
+      this.fail(error,epoch);
+    });
   }
-  pause() { const epoch = this.epoch; this.paused = true; return this.context?.suspend().catch(error => this.fail(error, epoch)); }
-  resume() {
-    const epoch = this.epoch; this.paused = false;
-    return this.context?.resume().then(() => { if (this.isCurrent(epoch)) this.pump(); }).catch(error => this.fail(error, epoch));
+  pause(){this.paused=true;this.audio?.pause()}
+  resume(){const epoch=this.epoch;this.paused=false;if(this.current){this.applyRate();return this.playMedia(epoch)}this.pump(epoch)}
+  setRate(rate){this.rate=rate;this.applyRate()}
+  stop(){
+    this.epoch++;this.active=false;this.controller?.abort();this.stream?.cancel();this.stream=null;
+    if(this.audio){this.audio.onended=null;this.audio.ontimeupdate=null;this.audio.onloadedmetadata=null;this.audio.onerror=null;this.audio.onplaying=null;this.audio.pause();this.audio.removeAttribute('src');this.audio.load();this.audio.muted=false}
+    if(this.preloader){this.preloader.pause();this.preloader.removeAttribute('src');this.preloader.load()}
+    for(const url of [...this.ownedUrls])this.release(url);this.queue=[];this.current=null;
   }
-  setRate(rate) { this.rate = rate; } // Takes effect on newly scheduled frames, within one second.
-  stop() {
-    this.epoch++; this.active = false;
-    clearInterval(this.timer); this.controller?.abort(); this.stream?.cancel(); this.stream = null;
-    for (const source of this.sources || []) { source.onended = null; try { source.stop(); source.disconnect(); } catch {} }
-    this.output?.dispose();this.output=null;
-    this.sources?.clear(); this.queue = []; this.timeline = []; this.pendingSeconds = 0;
-    this.context?.suspend().catch(() => {});
-  }
-  fail(error, epoch) { if (!this.isCurrent(epoch)) return; this.stop(); this.onError?.(error); }
+  fail(error,epoch){if(!this.isCurrent(epoch))return;this.stop();this.onError?.(error)}
 }

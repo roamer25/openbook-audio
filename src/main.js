@@ -1,7 +1,6 @@
 import { PhononTTS } from 'phonon-tts';
 import { importEpub } from './book-navigation.js';
 import { BufferedNarrator, narrationChunk } from './buffered-narrator.js';
-import { createPitchOutput } from './pitch-output.js';
 import { ListeningProgress, clockTime } from './listening-progress.js';
 import { BookLibrary } from './book-library.js';
 const $=id=>document.getElementById(id),synth=window.speechSynthesis;let aiEngine=null,aiVoiceCache={},aiMode=false;let sections=[],title='',sectionIndex=0,charIndex=0,playing=false,paused=false,token=0,voiceList=[],utterance=null,started=false,watchdog=null;const status=t=>$('status').textContent=t;const normalize=t=>t.replace(/\r/g,'').replace(/[ \t]+/g,' ').replace(/\n{3,}/g,'\n\n').trim();let contents=[],contentsSource='',activeContentsIndex=-1;
@@ -71,7 +70,8 @@ async function ensureVoice(engine,name){
  aiVoiceCache[name]=true;
 }
 const aiPlayback=new BufferedNarrator({
- outputFactory:createPitchOutput,
+ audioFactory:()=>$('narrationAudio'),
+ onBlocked:()=>{playing=false;paused=true;$('play').textContent='▶';status('Audio is ready. Tap Play to start.')},
  onPassage:({section,start,end,seconds})=>{timing?.observe(section,start,end,seconds);updateTimeDisplay()},
  onPosition:(index,offset)=>{if(!playing)return;const changed=index!==sectionIndex;sectionIndex=index;charIndex=offset;if(changed)display();else progress()},
  onStatus:message=>{if(!paused)status(message)},
