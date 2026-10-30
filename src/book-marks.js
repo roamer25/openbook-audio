@@ -25,6 +25,6 @@ export function markedSegments(text,marks,start,end){
  const points=new Set([0,text.length,Math.max(0,Math.min(text.length,start)),Math.max(0,Math.min(text.length,end))]);
  for(const mark of highlights){points.add(Math.max(0,Math.min(text.length,mark.start)));points.add(Math.max(0,Math.min(text.length,mark.end)))}
  const offsets=[...points].sort((a,b)=>a-b),segments=[];
- for(let i=0;i<offsets.length-1;i++){const from=offsets[i],to=offsets[i+1];if(from===to)continue;segments.push({text:text.slice(from,to),start:from,current:from>=start&&from<end,highlighted:highlights.some(mark=>from>=mark.start&&from<mark.end)})}
+ for(let i=0;i<offsets.length-1;i++){const from=offsets[i],to=offsets[i+1];if(from===to)continue;segments.push({text:text.slice(from,to),start:from,current:from>=start&&from<end,highlighted:highlights.some(mark=>from>=mark.start&&from<mark.end),highlightIds:highlights.filter(mark=>from>=mark.start&&from<mark.end).map(mark=>mark.id)})}
  return segments;
 }

@@ -15,3 +15,10 @@ test('overlapping highlights and the moving read-along preserve every character'
  const text='The traveller opened his book.';const result=markedSegments(text,[{kind:'highlight',start:4,end:13},{kind:'highlight',start:10,end:20}],8,16);assert.equal(result.map(part=>part.text).join(''),text);assert.ok(result.some(part=>part.current&&part.highlighted));assert.equal(result.filter(part=>part.highlighted).map(part=>part.text).join(''),text.slice(4,20));
  const passage=momentPassage(text,9);assert.equal(passage.start,4);assert.ok(passage.text.startsWith('traveller'));assert.equal(text.slice(passage.start,passage.end),passage.text);assert.ok(momentPassage(text,text.length).text.length>0);
 });
+test('deleting one overlapping highlight retains the other and undo restores the passage',async()=>{
+ const library=new BookLibrary({indexedDB,name:'marks-delete-'+Date.now()});const text='The traveller opened his book.';const shelf=await library.save({name:'Book',parts:[{text}]},{sectionIndex:0,charIndex:8},{rate:2});
+ const first=await library.saveMark(shelf.id,{kind:'highlight',sectionIndex:0,start:4,end:20,text:text.slice(4,20),note:'Keep this note',chapter:'Chapter 1'});const second=await library.saveMark(shelf.id,{kind:'highlight',sectionIndex:0,start:10,end:24,text:text.slice(10,24),chapter:'Chapter 1'});
+ let segments=markedSegments(text,await library.listMarks(shelf.id),0,4);assert.ok(segments.some(segment=>segment.highlightIds.includes(first.id)&&segment.highlightIds.includes(second.id)));
+ await library.removeMark(first.id);segments=markedSegments(text,await library.listMarks(shelf.id),0,4);assert.ok(!segments.some(segment=>segment.highlightIds.includes(first.id)));assert.ok(segments.some(segment=>segment.highlightIds.includes(second.id)));assert.equal(segments.map(segment=>segment.text).join(''),text);
+ await library.saveMark(shelf.id,first);assert.equal((await library.listMarks(shelf.id)).length,2);assert.ok((await library.listMarks(shelf.id)).some(mark=>mark.note==='Keep this note'));assert.equal((await library.get(shelf.id)).shelf.position.charIndex,8);await library.close();
+});
