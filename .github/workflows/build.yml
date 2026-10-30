@@ -16,6 +16,7 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci
+      - run: node --test tests/buffered-narrator.test.js
       - run: node --check src/main.js
       - run: node --check vite.config.js
       - run: npm run build
