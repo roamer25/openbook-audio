@@ -2,7 +2,7 @@ import { PhononTTS } from 'phonon-tts';
 const $=id=>document.getElementById(id),synth=window.speechSynthesis;let aiPlayer=null,aiEngine=null,aiVoiceCache={},aiBusy=false,aiMode=false;let sections=[],title='',sectionIndex=0,charIndex=0,playing=false,paused=false,token=0,voiceList=[],utterance=null,started=false,watchdog=null;const status=t=>$('status').textContent=t;const normalize=t=>t.replace(/\r/g,'').replace(/[ \t]+/g,' ').replace(/\n{3,}/g,'\n\n').trim();function setBook(name,parts){stop();title=name;sections=parts.filter(x=>x.text.trim());sectionIndex=0;charIndex=0;$('filename').textContent=name;$('bookTitle').textContent=name;$('chapters').replaceChildren();sections.forEach((p,i)=>{let o=new Option(`${i+1}. ${p.title}`,String(i));$('chapters').add(o)});display();status(`Ready: ${sections.length} section(s).`)}function display(){let p=sections[sectionIndex];$('reader').textContent=p?p.text:'Your book’s text will appear here.';$('chapters').value=String(sectionIndex);progress()}function progress(){let p=sections[sectionIndex];$('seek').value=p?Math.round((charIndex/p.text.length)*100):0;$('progress').textContent=p?`Section ${sectionIndex+1}/${sections.length} · ${Math.min(charIndex,p.text.length).toLocaleString()}/${p.text.length.toLocaleString()} characters`:'No book loaded'}function stop(){if(aiPlayer){aiPlayer.pause();aiPlayer.removeAttribute('src');aiPlayer.load()}aiBusy=false;token++;playing=false;paused=false;started=false;clearTimeout(watchdog);utterance=null;synth?.cancel();$('play').textContent='▶'}function chooseChunk(t,start){let end=Math.min(start+220,t.length);if(end<t.length){let cut=Math.max(t.lastIndexOf('. ',end),t.lastIndexOf('? ',end),t.lastIndexOf('! ',end),t.lastIndexOf(' ',end));if(cut>start+70)end=cut+1}return t.slice(start,end)}function speak(){if(aiMode){speakAI();return}
 if(!playing)return;if(!synth&&!aiMode)return;
 const mine=token;
-if(sectionIndex>=sections.length){stop();status('Finished the book.');return}
+if(sectionIndex>=sections.length){stop();sectionIndex=sections.length-1;charIndex=sections[sectionIndex].text.length;display();status('Finished the book. Tap Play to listen again.');return}
 const text=sections[sectionIndex].text;
 if(charIndex>=text.length){sectionIndex++;charIndex=0;display();speak();return}
 const chunk=chooseChunk(text,charIndex);
@@ -26,10 +26,11 @@ watchdog=setTimeout(()=>{if(mine===token&&playing&&!started){status('Speech did 
 function play(){
 if(!sections.length){status('Open a book or paste text first.');return}
 if(!synth&&!aiMode){status('Speech is not supported by this browser.');return}
-if(paused){paused=false;playing=true;if(aiMode){aiPlayer?.play().catch(e=>status('Tap Play again: '+e.message))}else synth.resume();$('play').textContent='❚❚';status('Resuming…');return}
+if(paused){paused=false;playing=true;if(aiMode){if(aiPlayer?.getAttribute('src')&&!aiPlayer.ended){aiPlayer.play().catch(e=>{playing=false;paused=true;$('play').textContent='▶';status('Tap Play again: '+e.message)})}else speakAI()}else synth.resume();$('play').textContent='❚❚';status('Resuming…');return}
 if(playing){if(aiMode)aiPlayer?.pause();else synth.pause();paused=true;playing=false;$('play').textContent='▶';status('Paused.');return}
 // Important for iOS Safari: do not cancel and immediately speak in the same tap.
 // Previous cancellation happens only when stopping/seeking/changing books.
+if(sectionIndex>=sections.length||charIndex>=sections[sectionIndex].text.length){sectionIndex=0;charIndex=0;display()}
 token++;playing=true;paused=false;$('play').textContent='❚❚';
 if(!aiMode&&synth?.paused)synth.resume();
 speak();
@@ -62,7 +63,7 @@ async function ensureVoice(engine,name){
 async function speakAI(){
  if(!playing||aiBusy)return;
  const mine=token;
- if(sectionIndex>=sections.length){stop();status('Finished the book.');return}
+ if(sectionIndex>=sections.length){stop();sectionIndex=sections.length-1;charIndex=sections[sectionIndex].text.length;display();status('Finished the book. Tap Play to listen again.');return}
  const text=sections[sectionIndex].text;
  if(charIndex>=text.length){sectionIndex++;charIndex=0;display();speakAI();return}
  const chunk=chooseChunk(text,charIndex).slice(0,155);
