@@ -16,8 +16,22 @@ function target(base, href) {
 function readDocument(source) {
   const doc = new DOMParser().parseFromString(source, 'text/html');
   doc.querySelectorAll('script,style,nav,svg,noscript').forEach(node => node.remove());
+  // Only explicit note semantics/classes are removed. Ordinary asides, numbered
+  // prose and unmarked paragraphs remain part of the book.
+  const noteTypes=new Set(['footnote','footnotes','endnote','endnotes','rearnote','rearnotes']);
+  const notes=Array.from(doc.querySelectorAll('*')).filter(node=>
+    (node.getAttribute('epub:type')||'').split(/\s+/).some(type=>noteTypes.has(type))||
+    (node.getAttribute('role')||'').split(/\s+/).some(role=>['doc-footnote','doc-endnote','doc-endnotes'].includes(role))||
+    Array.from(node.classList).some(name=>['footnote','footnotes','endnote','endnotes'].includes(name.toLowerCase())));
+  const noteIds=new Set(notes.flatMap(node=>[node.id,...Array.from(node.querySelectorAll('[id]'),child=>child.id)]).filter(Boolean));
+  for(const node of Array.from(doc.querySelectorAll('*'))){
+    const types=(node.getAttribute('epub:type')||'').split(/\s+/),roles=(node.getAttribute('role')||'').split(/\s+/);
+    const href=node.getAttribute('href')||'';
+    if(types.includes('noteref')||roles.includes('doc-noteref')||roles.includes('doc-backlink')||(href.startsWith('#')&&noteIds.has(decode(href.slice(1)))))node.remove();
+  }
+  for(const note of notes){if(note===doc.body||note===doc.documentElement)doc.body.replaceChildren();else note.remove()}
   const heading = clean(doc.querySelector('h1,h2,h3,h4,h5,h6')?.textContent);
-  const anchors = new Map();
+  const anchors = new Map(),headings=[];
   let raw = '';
   const block = /^(H[1-6]|P|DIV|SECTION|ARTICLE|LI|BLOCKQUOTE|PRE|TR|DT|DD)$/;
   const boundary = () => { if (raw && !raw.endsWith('\n\n')) raw += '\n\n'; };
@@ -25,9 +39,11 @@ function readDocument(source) {
     if (node.nodeType === 3) { raw += node.textContent; return; }
     if (node.nodeType !== 1) return;
     if (block.test(node.tagName)) boundary();
+    const headingSpan=/^H[1-6]$/.test(node.tagName)?{title:clean(node.textContent),start:raw.length}:null;
     for (const id of [node.id, node.getAttribute('name')]) if (id && !anchors.has(id)) anchors.set(id, raw.length);
     if (node.tagName === 'BR') raw += '\n';
     else node.childNodes.forEach(walk);
+    if(headingSpan){headingSpan.end=raw.length;headings.push(headingSpan)}
     if (block.test(node.tagName)) boundary();
   }
   walk(doc.body);
@@ -37,7 +53,8 @@ function readDocument(source) {
     while (/\s/.test(text[offset] || '') && offset < text.length) offset++;
     anchors.set(id, offset);
   }
-  return { text, anchors, heading };
+  for(const span of headings){span.start=clean(raw.slice(0,span.start)).length;while(span.start<text.length&&/\s/.test(text[span.start]))span.start++;span.end=clean(raw.slice(0,span.end)).length}
+  return { text, anchors, heading, headings };
 }
 
 function htmlContents(source, path, isNav) {
@@ -88,7 +105,7 @@ export async function importEpub(file) {
     const content = readDocument(await entry.async('text'));
     if (!content.text) continue;
     locations.set(link.path, { index: parts.length, anchors: content.anchors });
-    parts.push({ title: content.heading || `Section ${parts.length + 1}`, text: content.text });
+    parts.push({ title: content.heading || `Section ${parts.length + 1}`, text: content.text, headings:content.headings });
   }
   if (!parts.length) throw Error('No readable chapters found.');
 

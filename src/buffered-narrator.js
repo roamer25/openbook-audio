@@ -1,4 +1,5 @@
 import { encodeWav } from 'phonon-tts';
+import { chapterPassage,passagePosition } from './chapter-narration.js';
 // Preserve every character and never split a word, including unusually long words.
 export function narrationChunk(text, start, limit = 600) {
   if (start >= text.length) return '';
@@ -21,7 +22,7 @@ export class BufferedNarrator {
     Object.assign(this,{audioFactory:audioFactory||(()=>new Audio()),preloaderFactory:preloaderFactory||(()=>new Audio()),urls:urls||URL,onPosition,onStatus,onEnded,onError,onBlocked,onPassage,onPlaybackState,maxAhead,prime});
     this.active=false;this.epoch=0;this.ownedUrls=new Set();
   }
-  start({getEngine,parts,sectionIndex,charIndex,voice,rate=1}) {
+  start({getEngine,parts,contents=[],sectionIndex,charIndex,voice,rate=1}) {
     this.stop();const epoch=this.epoch;this.active=true;this.paused=false;this.rate=rate;this.queue=[];this.current=null;this.inputDone=false;this.controller=new AbortController();
     try {
       this.audio ||= this.audioFactory();this.preloader ||= this.preloaderFactory();
@@ -30,7 +31,7 @@ export class BufferedNarrator {
       // when asynchronously generated audio becomes available.
       if(this.prime)this.unlock(epoch);
       this.onStatus?.('Preparing narration…');
-      this.task=this.produce({getEngine,parts,sectionIndex,charIndex,voice,epoch}).catch(error=>this.fail(error,epoch));
+      this.task=this.produce({getEngine,parts,contents,sectionIndex,charIndex,voice,epoch}).catch(error=>this.fail(error,epoch));
     } catch(error){this.fail(error,epoch)}
   }
   reportPlayback(state){this.playbackState=state;this.onPlaybackState?.(state)}
@@ -44,7 +45,7 @@ export class BufferedNarrator {
       this.release(url);
     });
   }
-  async produce({getEngine,parts,sectionIndex,charIndex,voice,epoch}){
+  async produce({getEngine,parts,contents,sectionIndex,charIndex,voice,epoch}){
     const engine=await getEngine();if(!this.isCurrent(epoch))return;
     for(let section=sectionIndex;section<parts.length;section++){
       const text=parts[section].text;
@@ -52,13 +53,13 @@ export class BufferedNarrator {
       for(let start=first;start<text.length;){
         while(this.isCurrent(epoch)&&this.aheadSeconds()>=this.maxAhead)await new Promise(resolve=>setTimeout(resolve,40));
         if(!this.isCurrent(epoch))return;
-        const passage=narrationChunk(text,start);const frames=[];let sampleCount=0;
-        const stream=engine.stream(passage,{voice,signal:this.controller.signal});this.stream=stream;
+        const passage=chapterPassage(parts[section],section,start,contents,narrationChunk);const frames=[];let sampleCount=0;
+        const stream=engine.stream(passage.text,{voice,signal:this.controller.signal});this.stream=stream;
         for await(const pcm of stream){if(!this.isCurrent(epoch))return;if(pcm.length){frames.push(pcm);sampleCount+=pcm.length}}
         if(!this.isCurrent(epoch))return;if(!sampleCount)throw Error('The narrator returned no audio.');
         const samples=new Float32Array(sampleCount);let offset=0;for(const pcm of frames){samples.set(pcm,offset);offset+=pcm.length}
         const seconds=sampleCount/engine.sampleRate;
-        const item={section,start,end:start+passage.length,seconds,url:this.own(encodeWav(samples,engine.sampleRate))};
+        const item={...passage,section,seconds,url:this.own(encodeWav(samples,engine.sampleRate))};
         this.onPassage?.({section,start,end:item.end,seconds});this.queue.push(item);start=item.end;this.pump(epoch);
       }
     }
@@ -73,7 +74,7 @@ export class BufferedNarrator {
     if(!item){if(this.inputDone){this.stop();this.onEnded?.()}else {this.reportPlayback('paused');this.onStatus?.('Buffering narration…')}return}
     this.current=item;this.audio.muted=false;this.audio.src=item.url;this.applyRate();
     this.audio.onloadedmetadata=()=>{if(this.isCurrent(epoch)&&this.current===item){this.applyRate();this.reportPlayback(this.playbackState||'paused')}};
-    this.audio.ontimeupdate=()=>{if(!this.isCurrent(epoch)||this.paused||this.current!==item)return;const fraction=Math.max(0,Math.min(1,(this.audio.currentTime||0)/item.seconds));this.onPosition?.(item.section,item.start+Math.floor((item.end-item.start)*fraction))};
+    this.audio.ontimeupdate=()=>{if(!this.isCurrent(epoch)||this.paused||this.current!==item)return;const fraction=Math.max(0,Math.min(1,(this.audio.currentTime||0)/item.seconds));this.onPosition?.(item.section,passagePosition(item,fraction))};
     this.audio.onended=()=>{if(!this.isCurrent(epoch)||this.current!==item)return;this.reportPlayback('paused');this.onPosition?.(item.section,item.end);this.current=null;this.release(item.url);this.pump(epoch)};
     this.audio.onerror=()=>this.fail(Error('Audio could not play. Tap Play to try again.'),epoch);
     this.audio.onplaying=()=>{if(this.isCurrent(epoch)&&!this.paused){this.reportPlayback('playing');this.onStatus?.('Narrating…')}};
