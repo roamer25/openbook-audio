@@ -1,3 +1,4 @@
+import { setupReadAlong } from './read-along.js';
 import { PhononTTS } from 'phonon-tts';
 import { importEpub } from './book-navigation.js';
 import { importPdf } from './pdf-navigation.js';
@@ -12,6 +13,8 @@ const $=id=>document.getElementById(id),synth=window.speechSynthesis;let aiEngin
 let timing=null,activeBookId=null,bookVersion=0,saveTimer=null,lastSavedPosition='',lastSavedAt=0;
 const bookLibrary=new BookLibrary();
 let bookMarks=[],selectionSnapshot=null,highlightEditorIds=[],deletedMoment=null;
+const readAlong=setupReadAlong({reader:$('reader'),button:$('followAlong'),message:$('readAlongStatus'),getPosition:()=>sections.length?{sectionIndex,charIndex}:null,render:renderReader,onBrowse:()=>{$('reader').classList.add('browsing')}});
+$('followAlong').onclick=()=>{selectionSnapshot=null;closeHighlightEditor();window.getSelection()?.removeAllRanges();readAlong.follow();refreshMomentControls()};
 const kindleHandoff=setupKindlePlace({
  button:$('kindlePlace'),panel:$('kindlePanel'),field:$('kindlePhrase'),message:$('kindleMessage'),location:$('kindleLocation'),copyButton:$('kindleCopy'),closeButton:$('kindleClose'),
  getPlace:()=>sections.length?{text:sections[sectionIndex]?.text||'',offset:charIndex,book:title,chapter:contents[activeContentsIndex]?.title||sections[sectionIndex]?.title}:null,
@@ -24,7 +27,7 @@ const sectionMedia=new SectionMediaSession({
  onStop:()=>{stop();status('Stopped.')},
  onSeek:seconds=>{if(!timing||!sections.length)return;const target=timing.seekChapter(sectionIndex,charIndex,seconds,Number($('speed').value));const resume=playing;stop();sectionIndex=target.sectionIndex;charIndex=target.charIndex;display();if(resume)play()},
 });
-function setBook(name,parts,bookContents,source,options={}){savePlace();stop();bookVersion++;resetMoments();kindleHandoff.reset();activeBookId=options.id||null;title=name;sections=parts.filter(x=>x.text.trim());sectionIndex=0;charIndex=0;contents=bookContents||sections.map((p,i)=>({title:p.title,depth:0,sectionIndex:i,charIndex:0}));contentsSource=source||'Reading sections';timing=new ListeningProgress(sections,contents);if(options.settings?.timing)timing.restore(options.settings.timing);if(options.position){sectionIndex=Math.max(0,Math.min(options.position.sectionIndex,sections.length-1));charIndex=Math.max(0,Math.min(options.position.charIndex,sections[sectionIndex].text.length))}if(options.settings){$('speed').value=String(options.settings.rate||1);$('speedLabel').textContent=Number($('speed').value).toFixed(1)+'×';if(Array.from($('voices').options).some(option=>option.value===options.settings.voice))$('voices').value=options.settings.voice;aiMode=$('voices').value.startsWith('ai:')}$('chapterSearch').value='';activeContentsIndex=-1;renderContents();$('filename').textContent=name;$('bookTitle').textContent=name;$('chapters').replaceChildren();sections.forEach((p,i)=>{let o=new Option(`${i+1}. ${p.title}`,String(i));$('chapters').add(o)});display();status(`Ready: ${sections.length} section(s).`);if(options.save!==false&&!options.id)storeCurrentBook();else if(options.id){scheduleSave();loadMoments()}}function display(){let p=sections[sectionIndex];$('reader').textContent=p?p.text:'Your book’s text will appear here.';$('reader').scrollTop=0;$('chapters').value=String(sectionIndex);progress()}function progress(){let p=sections[sectionIndex];$('seek').value=p?Math.round((charIndex/p.text.length)*100):0;$('progress').textContent=p?`Section ${sectionIndex+1}/${sections.length} · ${Math.min(charIndex,p.text.length).toLocaleString()}/${p.text.length.toLocaleString()} characters`:'No book loaded';updateReadingPosition();refreshMomentControls();kindleHandoff.refresh();updateTimeDisplay();scheduleSave()}function stop(){closeHighlightEditor();selectionSnapshot=null;aiPlayback.stop();token++;playing=false;paused=false;started=false;clearTimeout(watchdog);utterance=null;synth?.cancel();$('play').textContent='▶';updateTimeDisplay()}
+function setBook(name,parts,bookContents,source,options={}){savePlace();stop();bookVersion++;resetMoments();kindleHandoff.reset();activeBookId=options.id||null;title=name;sections=parts.filter(x=>x.text.trim());sectionIndex=0;charIndex=0;contents=bookContents||sections.map((p,i)=>({title:p.title,depth:0,sectionIndex:i,charIndex:0}));contentsSource=source||'Reading sections';timing=new ListeningProgress(sections,contents);if(options.settings?.timing)timing.restore(options.settings.timing);if(options.position){sectionIndex=Math.max(0,Math.min(options.position.sectionIndex,sections.length-1));charIndex=Math.max(0,Math.min(options.position.charIndex,sections[sectionIndex].text.length))}if(options.settings){$('speed').value=String(options.settings.rate||1);$('speedLabel').textContent=Number($('speed').value).toFixed(1)+'×';if(Array.from($('voices').options).some(option=>option.value===options.settings.voice))$('voices').value=options.settings.voice;aiMode=$('voices').value.startsWith('ai:')}readAlong.reset();$('chapterSearch').value='';activeContentsIndex=-1;renderContents();$('filename').textContent=name;$('bookTitle').textContent=name;$('chapters').replaceChildren();sections.forEach((p,i)=>{let o=new Option(`${i+1}. ${p.title}`,String(i));$('chapters').add(o)});display();status(`Ready: ${sections.length} section(s).`);if(options.save!==false&&!options.id)storeCurrentBook();else if(options.id){scheduleSave();loadMoments()}}function display(){if(!sections.length){$('reader').textContent='Your book’s text will appear here.';$('currentChapter').textContent='No chapter selected';readAlong.reset()}$('chapters').value=String(sectionIndex);progress()}function progress(){let p=sections[sectionIndex];$('seek').value=p?Math.round((charIndex/p.text.length)*100):0;$('progress').textContent=p?`Section ${sectionIndex+1}/${sections.length} · ${Math.min(charIndex,p.text.length).toLocaleString()}/${p.text.length.toLocaleString()} characters`:'No book loaded';updateReadingPosition();refreshMomentControls();kindleHandoff.refresh();updateTimeDisplay();scheduleSave()}function stop(){closeHighlightEditor();selectionSnapshot=null;aiPlayback.stop();token++;playing=false;paused=false;started=false;clearTimeout(watchdog);utterance=null;synth?.cancel();$('play').textContent='▶';updateTimeDisplay()}
 function chooseChunk(text,start){return narrationChunk(text,start,800)}
 function narratedContents(){return contentsSource==='Reading sections'||contentsSource.includes('chapter boundaries unavailable')?[]:contents}
 function speak(){if(aiMode){speakAI();return}
@@ -111,7 +114,7 @@ $('upload').onchange=async e=>{let file=e.target.files?.[0];if(!file)return;stat
 const cover=document.getElementById('coverTitle');new MutationObserver(()=>{cover.textContent=document.getElementById('bookTitle').textContent.slice(0,70)}).observe(document.getElementById('bookTitle'),{childList:true});
 function jumpToSection(index,offset){
  if(!sections[index])return;
- selectionSnapshot=null;const resume=playing;stop();sectionIndex=index;charIndex=Math.max(0,Math.min(offset,sections[index].text.length));display();
+ selectionSnapshot=null;const resume=playing;stop();sectionIndex=index;charIndex=Math.max(0,Math.min(offset,sections[index].text.length));readAlong.follow();display();
  status('Selected: '+(contents.find(entry=>entry.sectionIndex===index&&entry.charIndex===charIndex)?.title||sections[index].title));
  if(resume)play();
 }
@@ -139,17 +142,24 @@ function updateReadingPosition(){
   if(!previous||entry.sectionIndex>previous.sectionIndex||(entry.sectionIndex===previous.sectionIndex&&entry.charIndex>=previous.charIndex))current=index;
  });
  activeContentsIndex=current;
- $('currentChapter').textContent=part?(contents[current]?.title||part.title):'No chapter selected';
+
  document.querySelectorAll('[data-contents-index]').forEach(button=>{
   if(Number(button.dataset.contentsIndex)===current)button.setAttribute('aria-current','location');else button.removeAttribute('aria-current');
  });
  if(!part)return;
- const reader=$('reader');const end=Math.min(part.text.length,charIndex+chooseChunk(part.text,charIndex).length);
- const fragments=markedSegments(part.text,bookMarks.filter(mark=>mark.sectionIndex===sectionIndex),charIndex,end);const output=document.createDocumentFragment();let activeMark=null;
+ readAlong.update();
+}
+function chapterAt(index,offset){let name=sections[index]?.title||'No chapter selected';for(const entry of contents){if(entry.sectionIndex<index||(entry.sectionIndex===index&&entry.charIndex<=offset))name=entry.title}return name}
+function renderReader(position,following){
+ const {sectionIndex:index,charIndex:offset}=position,part=sections[index];if(!part)return;
+ const reader=$('reader'),previousScroll=reader.scrollTop,changed=reader.dataset.sectionIndex!==String(index);
+ reader.classList.toggle('browsing',!following);
+ $('currentChapter').textContent=chapterAt(index,offset);
+ const end=following?Math.min(part.text.length,offset+chooseChunk(part.text,offset).length):0;
+ const fragments=markedSegments(part.text,bookMarks.filter(mark=>mark.sectionIndex===index),following?offset:0,end);const output=document.createDocumentFragment();let activeMark=null;
  for(const fragment of fragments){if(!fragment.current&&!fragment.highlighted){output.append(document.createTextNode(fragment.text));continue}const node=document.createElement('mark');node.textContent=fragment.text;if(fragment.highlighted){node.classList.add('saved-highlight');node.dataset.highlightIds=JSON.stringify(fragment.highlightIds);node.tabIndex=0;node.setAttribute('role','button');node.setAttribute('aria-label','Edit saved highlight');node.title='Tap to delete this highlight'}if(fragment.current){node.classList.add('current-passage');if(!activeMark){node.id='readingPosition';activeMark=node}}output.append(node)}
- reader.replaceChildren(output);
- if(activeMark&&(activeMark.offsetTop<reader.scrollTop||activeMark.offsetTop+activeMark.offsetHeight>reader.scrollTop+reader.clientHeight))reader.scrollTop=Math.max(0,activeMark.offsetTop-24);
- refreshMomentControls();
+ reader.replaceChildren(output);reader.dataset.sectionIndex=String(index);reader.scrollTop=changed?0:previousScroll;
+ if(following&&activeMark&&(activeMark.offsetTop<reader.scrollTop||activeMark.offsetTop+activeMark.offsetHeight>reader.scrollTop+reader.clientHeight))reader.scrollTop=Math.max(0,activeMark.offsetTop-24);
 }
 $('chapterSearch').oninput=renderContents;
 
@@ -201,27 +211,28 @@ renderLibrary().then(entries=>{if(!sections.length&&entries.length)openSavedBook
 document.addEventListener('visibilitychange',updateTimeDisplay);
 
 function resetMoments(){closeHighlightEditor();deletedMoment=null;$('undoMoment').hidden=true;$('undoHighlight').hidden=true;bookMarks=[];selectionSnapshot=null;$('savedMoments').replaceChildren();$('markNote').value='';$('marksMessage').textContent='';refreshMomentControls()}
-function refreshMomentControls(){const loaded=!!sections.length;for(const id of ['saveBookmark','saveClip','saveHighlight','clipSelection','highlightSelection'])$(id).disabled=!loaded;const chosen=selectionSnapshot?.version===bookVersion&&selectionSnapshot.sectionIndex===sectionIndex?selectionSnapshot:null;$('markSelection').textContent=!loaded?'Open a book to save a moment.':chosen?'Selected: '+chosen.text.slice(0,240):'Using the passage near your current listening position.'}
-async function loadMoments(){const id=activeBookId,version=bookVersion;if(!id)return;try{const marks=await bookLibrary.listMarks(id);if(id!==activeBookId||version!==bookVersion)return;bookMarks=marks;renderMoments();renderHighlightEditor();updateReadingPosition()}catch(error){$('marksMessage').textContent='Saved moments could not load: '+error.message}}
+function refreshMomentControls(){const loaded=!!sections.length;for(const id of ['saveBookmark','saveClip','saveHighlight','clipSelection','highlightSelection'])$(id).disabled=!loaded;const chosen=selectionSnapshot?.version===bookVersion&&sections[selectionSnapshot.sectionIndex]?selectionSnapshot:null;$('markSelection').textContent=!loaded?'Open a book to save a moment.':chosen?'Selected: '+chosen.text.slice(0,240):'Using the passage near your current listening position.'}
+async function loadMoments(){const id=activeBookId,version=bookVersion;if(!id)return;try{const marks=await bookLibrary.listMarks(id);if(id!==activeBookId||version!==bookVersion)return;bookMarks=marks;renderMoments();renderHighlightEditor();if(!selectedPassage($('reader'),window.getSelection()))readAlong.update({refresh:true});refreshMomentControls()}catch(error){$('marksMessage').textContent='Saved moments could not load: '+error.message}}
 function renderMoments(){const list=$('savedMoments');list.replaceChildren();for(const mark of bookMarks){const item=document.createElement('li'),jump=document.createElement('button');jump.type='button';jump.className='moment-jump';jump.textContent=mark.kind[0].toUpperCase()+mark.kind.slice(1)+' · '+mark.chapter;jump.onclick=()=>jumpToSection(mark.sectionIndex,mark.start);const quote=document.createElement('blockquote');quote.textContent=mark.text;item.append(jump,quote);if(mark.note){const note=document.createElement('p');note.className='moment-note';note.textContent=mark.note;item.append(note)}const remove=document.createElement('button');remove.type='button';remove.className='remove-book';remove.textContent='Delete '+mark.kind;remove.setAttribute('aria-label','Delete '+mark.kind+' from '+mark.chapter);remove.onclick=()=>deleteMoment(mark);item.append(remove);list.append(item)}}
 async function saveMoment(kind){
- if(!sections.length)return;if(playing)$('pause').click();
- const version=bookVersion,index=sectionIndex,point=charIndex,note=$('markNote').value;
- const selected=selectionSnapshot?.version===version&&selectionSnapshot.sectionIndex===index?selectionSnapshot:null;
+ if(!sections.length)return;
+ const version=bookVersion,note=$('markNote').value;
+ const selected=kind!=='bookmark'&&selectionSnapshot?.version===version?selectionSnapshot:null;
+ const index=selected?selected.sectionIndex:sectionIndex,point=charIndex;
  const passage=kind!=='bookmark'&&selected?selected:momentPassage(sections[index].text,point);
- const mark={kind,sectionIndex:index,start:kind==='bookmark'?point:passage.start,end:Math.max(kind==='bookmark'?point:passage.start,passage.end),text:passage.text,note,chapter:contents[activeContentsIndex]?.title||sections[index].title};
+ const mark={kind,sectionIndex:index,start:kind==='bookmark'?point:passage.start,end:Math.max(kind==='bookmark'?point:passage.start,passage.end),text:passage.text,note,chapter:chapterAt(index,kind==='bookmark'?point:passage.start)};
  $('marksMessage').textContent='Saving…';
- try{if(!activeBookId)await storeCurrentBook();if(version!==bookVersion)return;if(!activeBookId)throw Error('The book must be saved before adding a moment.');await bookLibrary.saveMark(activeBookId,mark);if(version!==bookVersion)return;if($('markNote').value===note)$('markNote').value='';selectionSnapshot=null;await loadMoments();$('marksMessage').textContent=kind==='bookmark'?'Listening position bookmarked.':kind==='clip'?'Text clip saved.':'Passage highlighted and saved.'}
+ try{if(!activeBookId)await storeCurrentBook();if(version!==bookVersion)return;if(!activeBookId)throw Error('The book must be saved before adding a moment.');await bookLibrary.saveMark(activeBookId,mark);if(version!==bookVersion)return;if($('markNote').value===note)$('markNote').value='';selectionSnapshot=null;window.getSelection()?.removeAllRanges();await loadMoments();$('marksMessage').textContent=kind==='bookmark'?'Listening position bookmarked.':kind==='clip'?'Text clip saved.':'Passage highlighted and saved.'}
  catch(error){if(version===bookVersion)$('marksMessage').textContent='Could not save: '+error.message}
 }
 $('saveBookmark').onclick=()=>saveMoment('bookmark');$('saveClip').onclick=()=>saveMoment('clip');$('saveHighlight').onclick=()=>saveMoment('highlight');
-document.addEventListener('selectionchange',()=>{if(!sections.length)return;const chosen=selectedPassage($('reader'),window.getSelection());if(!chosen)return;if(playing)$('pause').click();selectionSnapshot={...chosen,sectionIndex,version:bookVersion};refreshMomentControls()});
+document.addEventListener('selectionchange',()=>{if(!sections.length)return;const chosen=selectedPassage($('reader'),window.getSelection());if(!chosen)return;readAlong.browse();selectionSnapshot={...chosen,sectionIndex:readAlong.position.sectionIndex,version:bookVersion};refreshMomentControls()});
 
 $('clipSelection').onclick=()=>saveMoment('clip');$('highlightSelection').onclick=()=>saveMoment('highlight');
 
 function closeHighlightEditor(){highlightEditorIds=[];$('highlightEditor').hidden=true;$('highlightChoices').replaceChildren()}
 function renderHighlightEditor(){const selected=bookMarks.filter(mark=>mark.kind==='highlight'&&highlightEditorIds.includes(mark.id));if(!selected.length){closeHighlightEditor();return}const list=$('highlightChoices');list.replaceChildren();for(const mark of selected){const item=document.createElement('article'),quote=document.createElement('blockquote'),remove=document.createElement('button');quote.textContent=mark.text;remove.type='button';remove.className='delete-highlight';remove.textContent='Delete highlight';remove.onclick=()=>deleteMoment(mark);item.append(quote,remove);list.append(item)}$('highlightEditor').hidden=false}
-function openHighlightEditor(event){const target=event.target.closest?.('[data-highlight-ids]');if(!target)return;if(event.type==='keydown'&&!['Enter',' '].includes(event.key))return;if(event.type==='keydown')event.preventDefault();if(playing)$('pause').click();highlightEditorIds=JSON.parse(target.dataset.highlightIds);renderHighlightEditor();$('highlightEditor').scrollIntoView({behavior:'smooth',block:'nearest'})}
+function openHighlightEditor(event){const target=event.target.closest?.('[data-highlight-ids]');if(!target)return;if(event.type==='keydown'&&!['Enter',' '].includes(event.key))return;if(event.type==='keydown')event.preventDefault();if(selectedPassage($('reader'),window.getSelection()))return;readAlong.browse();highlightEditorIds=JSON.parse(target.dataset.highlightIds);renderHighlightEditor();$('highlightEditor').scrollIntoView({behavior:'smooth',block:'nearest'})}
 async function deleteMoment(mark){const version=bookVersion,id=activeBookId;try{await bookLibrary.removeMark(mark.id);if(version!==bookVersion||id!==activeBookId)return;deletedMoment={mark,bookId:id,version};selectionSnapshot=null;await loadMoments();if(version!==bookVersion)return;$('marksMessage').textContent=mark.kind[0].toUpperCase()+mark.kind.slice(1)+' deleted.';$('undoMoment').hidden=false;$('undoHighlight').hidden=false}catch(error){if(version===bookVersion)$('marksMessage').textContent='Could not delete: '+error.message}}
 $('undoMoment').onclick=async()=>{const removed=deletedMoment;if(!removed||removed.version!==bookVersion||removed.bookId!==activeBookId)return;$('undoMoment').disabled=true;$('undoHighlight').disabled=true;try{await bookLibrary.saveMark(removed.bookId,removed.mark);if(removed.version!==bookVersion)return;deletedMoment=null;$('undoMoment').hidden=true;$('undoHighlight').hidden=true;await loadMoments();$('marksMessage').textContent='Saved moment restored.'}catch(error){if(removed.version===bookVersion)$('marksMessage').textContent='Could not restore: '+error.message}finally{$('undoMoment').disabled=false;$('undoHighlight').disabled=false}};
 $('reader').addEventListener('click',openHighlightEditor);$('reader').addEventListener('keydown',openHighlightEditor);$('closeHighlightEditor').onclick=closeHighlightEditor;
