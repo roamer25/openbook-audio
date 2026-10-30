@@ -14,8 +14,8 @@ export function narrationChunk(text, start, limit = 600) {
 }
 
 export class BufferedNarrator {
-  constructor({ contextFactory, onPosition, onStatus, onEnded, onError, prebuffer = 6, maxAhead = 30 } = {}) {
-    Object.assign(this, { contextFactory: contextFactory || (() => new (window.AudioContext || window.webkitAudioContext)()), onPosition, onStatus, onEnded, onError, prebuffer, maxAhead });
+  constructor({ contextFactory, outputFactory, onPosition, onStatus, onEnded, onError, onPassage, prebuffer = 6, maxAhead = 30 } = {}) {
+    Object.assign(this, { contextFactory: contextFactory || (() => new (window.AudioContext || window.webkitAudioContext)()), outputFactory:outputFactory|| (async context=>({input:context.destination,setRateAtTime(){},dispose(){},drainSeconds:0})), onPosition, onStatus, onEnded, onError, onPassage, prebuffer, maxAhead });
     this.epoch = 0; this.active = false; this.context = null;
   }
   start({ getEngine, parts, sectionIndex, charIndex, voice, rate = 1 }) {
@@ -35,8 +35,10 @@ export class BufferedNarrator {
   }
   async produce({ getEngine, parts, sectionIndex, charIndex, voice, epoch }) {
     await this.contextReady;
-    const engine = await getEngine();
-    if (!this.isCurrent(epoch)) return;
+    const outputReady=this.outputFactory(this.context).then(output=>{if(this.isCurrent(epoch))this.output=output;else output.dispose();return output});
+    const [engine,output] = await Promise.all([getEngine(),outputReady]);
+    if (!this.isCurrent(epoch)) {output.dispose();return;}
+    this.output=output;output.onFailure?.(error=>this.fail(error,epoch));
     this.sampleRate = engine.sampleRate;
     this.onStatus?.('Buffering narration…');
     for (let section = sectionIndex; section < parts.length; section++) {
@@ -60,6 +62,7 @@ export class BufferedNarrator {
         }
         if (!this.isCurrent(epoch)) return;
         record.complete = true;
+        this.onPassage?.({section,start:record.start,end:record.end,seconds:record.totalSamples/this.sampleRate});
         if (!record.totalSamples) throw Error('The narrator returned no audio.');
         start = record.end;
       }
@@ -86,8 +89,9 @@ export class BufferedNarrator {
       const buffer = this.context.createBuffer(1, item.pcm.length, this.sampleRate);
       buffer.copyToChannel(item.pcm, 0);
       const source = this.context.createBufferSource();
-      source.buffer = buffer; source.playbackRate.value = this.rate; source.connect(this.context.destination);
+      source.buffer = buffer; source.playbackRate.value = this.rate; source.connect(this.output.input);
       const time = Math.max(this.tail, now + 0.01);
+      this.output.setRateAtTime(this.rate,time);
       const duration = buffer.duration / this.rate;
       this.timeline.push({ time, end: time + duration, ...item });
       this.tail = time + duration;
@@ -114,7 +118,7 @@ export class BufferedNarrator {
       this.started = false; this.onStatus?.('Buffering narration…');
     }
     this.pump();
-    if (this.inputDone && !this.queue.length && !this.sources.size && now >= this.tail) {
+    if (this.inputDone && !this.queue.length && !this.sources.size && now >= this.tail+(this.output?.drainSeconds||0)) {
       this.stop(); this.onEnded?.();
     }
   }
@@ -128,6 +132,7 @@ export class BufferedNarrator {
     this.epoch++; this.active = false;
     clearInterval(this.timer); this.controller?.abort(); this.stream?.cancel(); this.stream = null;
     for (const source of this.sources || []) { source.onended = null; try { source.stop(); source.disconnect(); } catch {} }
+    this.output?.dispose();this.output=null;
     this.sources?.clear(); this.queue = []; this.timeline = []; this.pendingSeconds = 0;
     this.context?.suspend().catch(() => {});
   }
