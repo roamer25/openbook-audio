@@ -1,6 +1,6 @@
 const key=value=>String(value||'').toLowerCase().replace(/[^\p{L}\p{N}]+/gu,' ').trim();
 const chapter=/^chapter\s+(\d+|[ivxlcdm]+|[a-z]+(?:[ -][a-z]+)?)(?=$|[\s:—–.\-])/i;
-const frontMatter=/^(?:part\b|book\s+[ivxlcdm\d]+\b|preface\b|introduction\b|foreword\b|prologue\b|epilogue\b|afterword\b|acknowledg|contents\b|table of contents\b|notes\b|endnotes\b|footnotes\b|bibliography\b|index\b|copyright\b|title page\b|dedication\b|appendix\b)/i;
+const frontMatter=/^(?:front matter\b|document$|part\b|book\s+[ivxlcdm\d]+\b|preface\b|introduction\b|foreword\b|prologue\b|epilogue\b|afterword\b|acknowledg|contents\b|table of contents\b|notes\b|endnotes\b|footnotes\b|bibliography\b|index\b|copyright\b|title page\b|dedication\b|appendix\b)/i;
 function spokenNumber(value){
  if(!/^[ivxlcdm]+$/i.test(value))return value;
  const numbers={i:1,v:5,x:10,l:50,c:100,d:500,m:1000};let result=0;
