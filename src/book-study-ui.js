@@ -6,7 +6,7 @@ function analyzeInWorker(input){
  let rejectJob;const promise=new Promise((resolve,reject)=>{rejectJob=reject;worker.onmessage=event=>{worker.terminate();if(event.data.error)reject(Error(event.data.error));else resolve(event.data.study)};worker.onerror=()=>{worker.terminate();reject(Error('Study analysis could not start. Please try again.'))};worker.postMessage(input)});
  return {promise,cancel(){worker.terminate();rejectJob(Error('cancelled'))}};
 }
-export function setupBookStudy({document,library,getBook,ensureSaved,onSource,analyze=analyzeInWorker}){
+export function setupBookStudy({document,library,getBook,ensureSaved,onSource,onOpen=()=>{},onClose=()=>{},analyze=analyzeInWorker}){
  const $=id=>document.getElementById(id);let state=empty(),revision=0,busy=false,job=null,tab='quiz',storageId=null,saveChain=Promise.resolve(),restoring=false;
  const say=text=>$('studyMessage').textContent=text;
  const same=(version)=>version===revision;
@@ -41,10 +41,10 @@ export function setupBookStudy({document,library,getBook,ensureSaved,onSource,an
   catch(error){if(same(version))say('Could not build study set: '+error.message)}finally{if(same(version)){busy=false;job=null;render()}}
  }
  async function reset(){revision++;job?.cancel?.();job=null;busy=false;restoring=false;state=empty();storageId=null;const book=getBook(),version=revision;$('studyPanel').hidden=true;$('studyBookName').textContent=book?.name||'Open a book to begin';$('studySearch').value='';$('studyAddLabel').value='';say('');render();if(!book?.id)return;restoring=true;controls();try{const saved=await library.getStudy(book.id);if(!same(version))return;storageId=book.id;if(saved&&Array.isArray(saved.custom)&&Array.isArray(saved.hidden)){state={...empty(),...saved};if(state.study)$('studyScope').value=state.study.scope}render()}catch(error){if(same(version))say('Saved study could not load: '+error.message)}finally{if(same(version)){restoring=false;controls()}}}
- $('studyOpen').onclick=()=>{if(!getBook())return;$('studyPanel').hidden=false;$('studyPanel').scrollIntoView({behavior:'smooth',block:'start'});render()};$('studyClose').onclick=()=>{$('studyPanel').hidden=true};$('studyBuild').onclick=build;
+ $('studyOpen').onclick=()=>{if(!getBook())return;$('studyPanel').hidden=false;onOpen();render()};$('studyClose').onclick=()=>{$('studyPanel').hidden=true;onClose()};$('studyBuild').onclick=build;
  for(const name of ['quiz','terms','people'])$('studyTab'+name[0].toUpperCase()+name.slice(1)).onclick=()=>showTab(name);
  $('studySearch').oninput=()=>{renderCards('terms');renderCards('people')};
  $('studyAdd').onclick=()=>{const label=$('studyAddLabel').value.trim();if(label.length<3||label.length>65){say('Enter a term or name between 3 and 65 characters.');return}const book=getBook();if(!book)return;const ranges=studyRanges(book.parts,book.contents,$('studyScope').value,book.position);if(!ranges.some(r=>phrasePattern(label).test(book.parts[r.sectionIndex].text.slice(r.start,r.end)))){say('That exact term or name was not found in the chosen scope. Check the wording or choose a wider scope.');return}const kind=$('studyAddKind').value;if(!state.custom.some(x=>x.kind===kind&&x.label.toLocaleLowerCase()===label.toLocaleLowerCase()))state.custom.push({label,kind});$('studyAddLabel').value='';void build()};
  $('studyRestoreHidden').onclick=()=>{state.hidden=[];render();void persist();say('Hidden terms and people restored.')};
- controls();return {reset,build,get state(){return state}};
+ controls();return {reset,build,show(){$('studyPanel').hidden=false;render()},get state(){return state}};
 }
