@@ -1,0 +1,17 @@
+
+{
+  "name": "openbook-audio-phonon",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite --host"
+  },
+  "dependencies": {
+    "phonon-tts": "0.4.2"
+  },
+  "devDependencies": {
+    "vite": "^7.1.0"
+  }
+}
