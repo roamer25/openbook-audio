@@ -17,8 +17,8 @@ export function narrationChunk(text, start, limit = 600) {
 // Use the browser's native, pitch-preserving media path. The generated PCM is
 // encoded unchanged; no third-party pitch processor touches the narrator's voice.
 export class BufferedNarrator {
-  constructor({audioFactory,preloaderFactory,urls,onPosition,onStatus,onEnded,onError,onBlocked,onPassage,maxAhead=90,prime=true}={}) {
-    Object.assign(this,{audioFactory:audioFactory||(()=>new Audio()),preloaderFactory:preloaderFactory||(()=>new Audio()),urls:urls||URL,onPosition,onStatus,onEnded,onError,onBlocked,onPassage,maxAhead,prime});
+  constructor({audioFactory,preloaderFactory,urls,onPosition,onStatus,onEnded,onError,onBlocked,onPassage,onPlaybackState,maxAhead=90,prime=true}={}) {
+    Object.assign(this,{audioFactory:audioFactory||(()=>new Audio()),preloaderFactory:preloaderFactory||(()=>new Audio()),urls:urls||URL,onPosition,onStatus,onEnded,onError,onBlocked,onPassage,onPlaybackState,maxAhead,prime});
     this.active=false;this.epoch=0;this.ownedUrls=new Set();
   }
   start({getEngine,parts,sectionIndex,charIndex,voice,rate=1}) {
@@ -33,6 +33,7 @@ export class BufferedNarrator {
       this.task=this.produce({getEngine,parts,sectionIndex,charIndex,voice,epoch}).catch(error=>this.fail(error,epoch));
     } catch(error){this.fail(error,epoch)}
   }
+  reportPlayback(state){this.playbackState=state;this.onPlaybackState?.(state)}
   isCurrent(epoch){return this.active&&this.epoch===epoch}
   own(blob){const url=this.urls.createObjectURL(blob);this.ownedUrls.add(url);return url}
   release(url){if(this.ownedUrls.delete(url))this.urls.revokeObjectURL(url)}
@@ -69,31 +70,32 @@ export class BufferedNarrator {
     if(!this.isCurrent(epoch)||this.paused)return;
     if(this.current){this.preloadNext();return}
     const item=this.queue.shift();
-    if(!item){if(this.inputDone){this.stop();this.onEnded?.()}else this.onStatus?.('Buffering narration…');return}
+    if(!item){if(this.inputDone){this.stop();this.onEnded?.()}else {this.reportPlayback('paused');this.onStatus?.('Buffering narration…')}return}
     this.current=item;this.audio.muted=false;this.audio.src=item.url;this.applyRate();
-    this.audio.onloadedmetadata=()=>{if(this.isCurrent(epoch)&&this.current===item)this.applyRate()};
+    this.audio.onloadedmetadata=()=>{if(this.isCurrent(epoch)&&this.current===item){this.applyRate();this.reportPlayback(this.playbackState||'paused')}};
     this.audio.ontimeupdate=()=>{if(!this.isCurrent(epoch)||this.paused||this.current!==item)return;const fraction=Math.max(0,Math.min(1,(this.audio.currentTime||0)/item.seconds));this.onPosition?.(item.section,item.start+Math.floor((item.end-item.start)*fraction))};
-    this.audio.onended=()=>{if(!this.isCurrent(epoch)||this.current!==item)return;this.onPosition?.(item.section,item.end);this.current=null;this.release(item.url);this.pump(epoch)};
+    this.audio.onended=()=>{if(!this.isCurrent(epoch)||this.current!==item)return;this.reportPlayback('paused');this.onPosition?.(item.section,item.end);this.current=null;this.release(item.url);this.pump(epoch)};
     this.audio.onerror=()=>this.fail(Error('Audio could not play. Tap Play to try again.'),epoch);
-    this.audio.onplaying=()=>{if(this.isCurrent(epoch)&&!this.paused)this.onStatus?.('Narrating…')};
+    this.audio.onplaying=()=>{if(this.isCurrent(epoch)&&!this.paused){this.reportPlayback('playing');this.onStatus?.('Narrating…')}};
+    this.audio.onwaiting=()=>{if(this.isCurrent(epoch))this.reportPlayback('paused')};
     this.onPosition?.(item.section,item.start);this.preloadNext();this.playMedia(epoch);
   }
   preloadNext(){const next=this.queue[0];if(next&&this.preloader.src!==next.url){this.preloader.src=next.url;this.preloader.load()}}
   playMedia(epoch){
     return Promise.resolve(this.audio.play()).catch(error=>{
       if(!this.isCurrent(epoch))return;
-      if(error.name==='NotAllowedError'){this.paused=true;this.onBlocked?.();this.onStatus?.('Audio is ready. Tap Play to start.');return}
+      if(error.name==='NotAllowedError'){this.paused=true;this.reportPlayback('paused');this.onBlocked?.();this.onStatus?.('Audio is ready. Tap Play to start.');return}
       this.fail(error,epoch);
     });
   }
-  pause(){this.paused=true;this.audio?.pause()}
+  pause(){this.paused=true;this.audio?.pause();this.reportPlayback('paused')}
   resume(){const epoch=this.epoch;this.paused=false;if(this.current){this.applyRate();return this.playMedia(epoch)}this.pump(epoch)}
   setRate(rate){this.rate=rate;this.applyRate()}
   stop(){
     this.epoch++;this.active=false;this.controller?.abort();this.stream?.cancel();this.stream=null;
-    if(this.audio){this.audio.onended=null;this.audio.ontimeupdate=null;this.audio.onloadedmetadata=null;this.audio.onerror=null;this.audio.onplaying=null;this.audio.pause();this.audio.removeAttribute('src');this.audio.load();this.audio.muted=false}
+    if(this.audio){this.audio.onended=null;this.audio.ontimeupdate=null;this.audio.onloadedmetadata=null;this.audio.onerror=null;this.audio.onplaying=null;this.audio.onwaiting=null;this.audio.pause();this.audio.removeAttribute('src');this.audio.load();this.audio.muted=false}
     if(this.preloader){this.preloader.pause();this.preloader.removeAttribute('src');this.preloader.load()}
-    for(const url of [...this.ownedUrls])this.release(url);this.queue=[];this.current=null;
+    for(const url of [...this.ownedUrls])this.release(url);this.queue=[];this.current=null;this.reportPlayback('paused');
   }
   fail(error,epoch){if(!this.isCurrent(epoch))return;this.stop();this.onError?.(error)}
 }
